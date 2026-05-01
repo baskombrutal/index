@@ -10,7 +10,9 @@ const ppegMintAddress = "pfKAC56v3mb661Kwd2ZK9sMWrGMbS2UHm5tj124ppeg";
 const ppegMint = new PublicKey(ppegMintAddress);
 const tokenProgram = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 const maxSupply = 2500;
-const port = Number(process.env.REGISTRY_PORT || 8787);
+const healthcheckPort = Number(process.env.PORT || 8080);
+const publicPort = Number(process.env.REGISTRY_PORT || 8787);
+const listenPorts = [...new Set([healthcheckPort, publicPort].filter(Boolean))];
 const solanaRpcUrl = process.env.SOLANA_RPC_URL || clusterApiUrl("mainnet-beta");
 const solanaRpcUrls = [
   solanaRpcUrl,
@@ -182,7 +184,7 @@ function send(response, statusCode, body) {
   response.end(JSON.stringify(body));
 }
 
-const server = createServer(async (request, response) => {
+async function handleRequest(request, response) {
   if (request.method === "OPTIONS") {
     send(response, 204, {});
     return;
@@ -192,12 +194,12 @@ const server = createServer(async (request, response) => {
 
   try {
     if (request.method === "GET" && url.pathname === "/") {
-      send(response, 200, { ok: true, service: "pepe-peg-registry", port });
+      send(response, 200, { ok: true, service: "pepe-peg-registry", ports: listenPorts });
       return;
     }
 
     if (request.method === "GET" && url.pathname === "/health") {
-      send(response, 200, { ok: true, port });
+      send(response, 200, { ok: true, ports: listenPorts });
       return;
     }
 
@@ -235,13 +237,17 @@ const server = createServer(async (request, response) => {
     console.error(error);
     send(response, 500, { error: error.message || "server error" });
   }
-});
+}
 
-server.on("error", (error) => {
-  console.error("Registry API failed to start", error);
-  process.exit(1);
-});
+for (const port of listenPorts) {
+  const server = createServer(handleRequest);
 
-server.listen(port, "0.0.0.0", () => {
-  console.log(`PEPE PEG registry API listening on 0.0.0.0:${port}`);
-});
+  server.on("error", (error) => {
+    console.error(`Registry API failed to start on port ${port}`, error);
+    process.exit(1);
+  });
+
+  server.listen(port, "0.0.0.0", () => {
+    console.log(`PEPE PEG registry API listening on 0.0.0.0:${port}`);
+  });
+}
