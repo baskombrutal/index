@@ -13,7 +13,7 @@ const maxSupply = 2500;
 const healthcheckPort = Number(process.env.PORT || 8080);
 const publicPort = Number(process.env.REGISTRY_PORT || 8787);
 const listenPorts = [...new Set([healthcheckPort, publicPort].filter(Boolean))];
-const reindexIntervalMs = Number(process.env.REINDEX_INTERVAL_MS || 30000);
+const reindexIntervalMs = Number(process.env.REINDEX_INTERVAL_MS || 3000);
 const solanaRpcUrl = process.env.SOLANA_RPC_URL || clusterApiUrl("mainnet-beta");
 const solanaRpcUrls = [
   solanaRpcUrl,
