@@ -4,15 +4,14 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { clusterApiUrl, Connection, PublicKey } from "@solana/web3.js";
 
-const rootDir = process.cwd();
-const dataDir = path.join(rootDir, "data");
+const dataDir = path.join(process.cwd(), "data");
 const registryPath = path.join(dataDir, "registry.json");
 const ppegMintAddress = "pfKAC56v3mb661Kwd2ZK9sMWrGMbS2UHm5tj124ppeg";
 const ppegMint = new PublicKey(ppegMintAddress);
 const tokenProgram = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 const maxSupply = 2500;
-const port = Number(process.env.PORT || process.env.REGISTRY_PORT || 8787);
-const solanaRpcUrl = process.env.SOLANA_RPC_URL || process.env.VITE_SOLANA_RPC_URL || clusterApiUrl("mainnet-beta");
+const port = Number(process.env.PORT || process.env.REGISTRY_PORT || 8080);
+const solanaRpcUrl = process.env.SOLANA_RPC_URL || clusterApiUrl("mainnet-beta");
 const solanaRpcUrls = [
   solanaRpcUrl,
   "https://api.mainnet-beta.solana.com",
@@ -29,9 +28,7 @@ function hashAddress(address) {
 }
 
 async function loadRegistry() {
-  if (!existsSync(registryPath)) {
-    return { assignments: {}, ids: {} };
-  }
+  if (!existsSync(registryPath)) return { assignments: {}, ids: {} };
 
   try {
     return JSON.parse(await readFile(registryPath, "utf8"));
@@ -53,26 +50,30 @@ function claimableCount(balance) {
   return Math.max(0, Math.min(maxSupply, Math.floor(Number(balance || 0))));
 }
 
-async function fetchPpegBalance(wallet) {
-  const owner = new PublicKey(wallet);
+async function withRpc(callback) {
   let lastError = null;
 
   for (const rpcUrl of solanaRpcUrls) {
     try {
       const connection = new Connection(rpcUrl, "confirmed");
-      const accounts = await connection.getParsedTokenAccountsByOwner(owner, { mint: ppegMint });
-
-      return accounts.value.reduce((total, account) => {
-        const tokenAmount = account.account.data.parsed.info.tokenAmount;
-        return total + Number(tokenAmount.uiAmountString || tokenAmount.uiAmount || 0);
-      }, 0);
+      return await callback(connection, rpcUrl);
     } catch (error) {
       lastError = error;
-      console.warn(`pPEG balance RPC failed: ${rpcUrl}`, error);
+      console.warn(`Solana RPC failed: ${rpcUrl}`, error?.message || error);
     }
   }
 
   throw lastError || new Error("All Solana RPC endpoints failed");
+}
+
+async function fetchPpegBalance(wallet) {
+  const owner = new PublicKey(wallet);
+  const accounts = await withRpc((connection) => connection.getParsedTokenAccountsByOwner(owner, { mint: ppegMint }));
+
+  return accounts.value.reduce((total, account) => {
+    const tokenAmount = account.account.data.parsed.info.tokenAmount;
+    return total + Number(tokenAmount.uiAmountString || tokenAmount.uiAmount || 0);
+  }, 0);
 }
 
 function nextAvailableId(wallet, registry, reservedIds = []) {
@@ -92,16 +93,10 @@ function nextAvailableId(wallet, registry, reservedIds = []) {
 function syncAssignment(wallet, balance, registry) {
   const targetCount = claimableCount(balance);
   const existing = registry.assignments[wallet] || { ids: [] };
-  const ids = [];
+  const ids = existing.ids.filter((id) => registry.ids[String(id)] === wallet);
+
   for (const id of existing.ids) {
-    if (registry.ids[String(id)] === wallet && !ids.includes(id)) {
-      ids.push(id);
-    }
-  }
-  for (const id of existing.ids) {
-    if (!ids.includes(id)) {
-      delete registry.ids[String(id)];
-    }
+    if (!ids.includes(id)) delete registry.ids[String(id)];
   }
 
   while (ids.length > targetCount) {
@@ -128,37 +123,25 @@ function syncAssignment(wallet, balance, registry) {
 }
 
 async function fetchPpegHolders() {
-  let lastError = null;
+  const accounts = await withRpc((connection) => connection.getParsedProgramAccounts(tokenProgram, {
+    filters: [
+      { dataSize: 165 },
+      { memcmp: { offset: 0, bytes: ppegMintAddress } },
+    ],
+  }));
 
-  for (const rpcUrl of solanaRpcUrls) {
-    try {
-      const connection = new Connection(rpcUrl, "confirmed");
-      const accounts = await connection.getParsedProgramAccounts(tokenProgram, {
-        filters: [
-          { dataSize: 165 },
-          { memcmp: { offset: 0, bytes: ppegMintAddress } },
-        ],
-      });
-
-      const balances = new Map();
-      for (const account of accounts) {
-        const info = account.account.data.parsed?.info;
-        const wallet = info?.owner;
-        const tokenAmount = info?.tokenAmount;
-        const balance = Number(tokenAmount?.uiAmountString || tokenAmount?.uiAmount || 0);
-        if (!wallet || balance <= 0) continue;
-        balances.set(wallet, (balances.get(wallet) || 0) + balance);
-      }
-
-      return Array.from(balances, ([wallet, balance]) => ({ wallet, balance }))
-        .sort((a, b) => a.wallet.localeCompare(b.wallet));
-    } catch (error) {
-      lastError = error;
-      console.warn(`pPEG holder scan RPC failed: ${rpcUrl}`, error);
-    }
+  const balances = new Map();
+  for (const account of accounts) {
+    const info = account.account.data.parsed?.info;
+    const wallet = info?.owner;
+    const tokenAmount = info?.tokenAmount;
+    const balance = Number(tokenAmount?.uiAmountString || tokenAmount?.uiAmount || 0);
+    if (!wallet || balance <= 0) continue;
+    balances.set(wallet, (balances.get(wallet) || 0) + balance);
   }
 
-  throw lastError || new Error("All Solana RPC endpoints failed");
+  return Array.from(balances, ([wallet, balance]) => ({ wallet, balance }))
+    .sort((a, b) => a.wallet.localeCompare(b.wallet));
 }
 
 async function refreshRegistryFromOnchain() {
@@ -173,9 +156,7 @@ async function refreshRegistryFromOnchain() {
   }
 
   for (const wallet of Object.keys(registry.assignments)) {
-    if (!activeWallets.has(wallet)) {
-      syncAssignment(wallet, 0, registry);
-    }
+    if (!activeWallets.has(wallet)) syncAssignment(wallet, 0, registry);
   }
 
   registry.lastIndexedAt = new Date().toISOString();
@@ -211,12 +192,12 @@ const server = createServer(async (request, response) => {
 
   try {
     if (request.method === "GET" && url.pathname === "/") {
-      send(response, 200, { ok: true, service: "pepe-peg-registry" });
+      send(response, 200, { ok: true, service: "pepe-peg-registry", port });
       return;
     }
 
     if (request.method === "GET" && url.pathname === "/health") {
-      send(response, 200, { ok: true });
+      send(response, 200, { ok: true, port });
       return;
     }
 
@@ -251,10 +232,16 @@ const server = createServer(async (request, response) => {
 
     send(response, 404, { error: "not found" });
   } catch (error) {
+    console.error(error);
     send(response, 500, { error: error.message || "server error" });
   }
 });
 
+server.on("error", (error) => {
+  console.error("Registry API failed to start", error);
+  process.exit(1);
+});
+
 server.listen(port, "0.0.0.0", () => {
-  console.log(`PEPE PEG registry API listening on http://0.0.0.0:${port}`);
+  console.log(`PEPE PEG registry API listening on 0.0.0.0:${port}`);
 });
