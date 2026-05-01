@@ -210,6 +210,11 @@ const server = createServer(async (request, response) => {
   const url = new URL(request.url, `http://${request.headers.host}`);
 
   try {
+    if (request.method === "GET" && url.pathname === "/") {
+      send(response, 200, { ok: true, service: "pepe-peg-registry" });
+      return;
+    }
+
     if (request.method === "GET" && url.pathname === "/health") {
       send(response, 200, { ok: true });
       return;
@@ -250,6 +255,6 @@ const server = createServer(async (request, response) => {
   }
 });
 
-server.listen(port, () => {
-  console.log(`PEPE PEG registry API listening on http://localhost:${port}`);
+server.listen(port, "0.0.0.0", () => {
+  console.log(`PEPE PEG registry API listening on http://0.0.0.0:${port}`);
 });
