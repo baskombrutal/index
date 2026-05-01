@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0",
     "compile": "vite build",
-    "registry": "node server/registry-server.mjs",
+    "registry": "node registry-server.mjs",
     "pinata:upload": "node scripts/upload-pinata.mjs",
     "rarity:build": "node scripts/build-rarity.mjs"
   },
