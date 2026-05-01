@@ -149,7 +149,13 @@ async function fetchPpegHolders() {
 async function refreshRegistryFromOnchain() {
   const holders = await fetchPpegHolders();
   const registry = await loadRegistry();
+  const balanceByWallet = new Map(holders.map((holder) => [holder.wallet, holder.balance]));
   const activeWallets = new Set();
+
+  for (const wallet of Object.keys(registry.assignments)) {
+    const balance = balanceByWallet.get(wallet) || 0;
+    syncAssignment(wallet, balance, registry);
+  }
 
   for (const holder of holders) {
     if (claimableCount(holder.balance) < 1) continue;
