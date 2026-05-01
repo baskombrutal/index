@@ -10,7 +10,7 @@ const ppegMintAddress = "pfKAC56v3mb661Kwd2ZK9sMWrGMbS2UHm5tj124ppeg";
 const ppegMint = new PublicKey(ppegMintAddress);
 const tokenProgram = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 const maxSupply = 2500;
-const port = Number(process.env.PORT || process.env.REGISTRY_PORT || 8787);
+const port = Number(process.env.REGISTRY_PORT || 8787);
 const solanaRpcUrl = process.env.SOLANA_RPC_URL || clusterApiUrl("mainnet-beta");
 const solanaRpcUrls = [
   solanaRpcUrl,
