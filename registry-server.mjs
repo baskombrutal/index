@@ -13,12 +13,14 @@ const maxSupply = 2500;
 const healthcheckPort = Number(process.env.PORT || 8080);
 const publicPort = Number(process.env.REGISTRY_PORT || 8787);
 const listenPorts = [...new Set([healthcheckPort, publicPort].filter(Boolean))];
+const reindexIntervalMs = Number(process.env.REINDEX_INTERVAL_MS || 30000);
 const solanaRpcUrl = process.env.SOLANA_RPC_URL || clusterApiUrl("mainnet-beta");
 const solanaRpcUrls = [
   solanaRpcUrl,
   "https://api.mainnet-beta.solana.com",
   "https://solana-rpc.publicnode.com",
 ].filter((url, index, urls) => url && urls.indexOf(url) === index);
+let reindexPromise = null;
 
 function hashAddress(address) {
   let hash = 2166136261;
@@ -173,6 +175,20 @@ async function refreshRegistryFromOnchain() {
   return registry;
 }
 
+function refreshRegistryOnce() {
+  if (!reindexPromise) {
+    reindexPromise = refreshRegistryFromOnchain()
+      .catch((error) => {
+        console.error("Registry auto refresh failed", error);
+      })
+      .finally(() => {
+        reindexPromise = null;
+      });
+  }
+
+  return reindexPromise;
+}
+
 async function readBody(request) {
   const chunks = [];
   for await (const chunk of request) chunks.push(chunk);
@@ -185,6 +201,7 @@ function send(response, statusCode, body) {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
+    "Cache-Control": "no-store, max-age=0",
     "Content-Type": "application/json",
   });
   response.end(JSON.stringify(body));
@@ -217,8 +234,8 @@ async function handleRequest(request, response) {
     }
 
     if ((request.method === "GET" || request.method === "POST") && url.pathname === "/registry/refresh") {
-      const registry = await refreshRegistryFromOnchain();
-      send(response, 200, registry);
+      const registry = await refreshRegistryOnce();
+      send(response, 200, registry || await loadRegistry());
       return;
     }
 
@@ -257,3 +274,6 @@ for (const port of listenPorts) {
     console.log(`PEPE PEG registry API listening on 0.0.0.0:${port}`);
   });
 }
+
+setTimeout(refreshRegistryOnce, 3000);
+setInterval(refreshRegistryOnce, reindexIntervalMs);
