@@ -9,8 +9,9 @@ const dataDir = path.join(rootDir, "data");
 const registryPath = path.join(dataDir, "registry.json");
 const ppegMintAddress = "pfKAC56v3mb661Kwd2ZK9sMWrGMbS2UHm5tj124ppeg";
 const ppegMint = new PublicKey(ppegMintAddress);
+const tokenProgram = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 const maxSupply = 2500;
-const port = Number(process.env.REGISTRY_PORT || 8787);
+const port = Number(process.env.PORT || process.env.REGISTRY_PORT || 8787);
 const solanaRpcUrl = process.env.SOLANA_RPC_URL || process.env.VITE_SOLANA_RPC_URL || clusterApiUrl("mainnet-beta");
 const solanaRpcUrls = [
   solanaRpcUrl,
@@ -126,6 +127,63 @@ function syncAssignment(wallet, balance, registry) {
   return registry.assignments[wallet];
 }
 
+async function fetchPpegHolders() {
+  let lastError = null;
+
+  for (const rpcUrl of solanaRpcUrls) {
+    try {
+      const connection = new Connection(rpcUrl, "confirmed");
+      const accounts = await connection.getParsedProgramAccounts(tokenProgram, {
+        filters: [
+          { dataSize: 165 },
+          { memcmp: { offset: 0, bytes: ppegMintAddress } },
+        ],
+      });
+
+      const balances = new Map();
+      for (const account of accounts) {
+        const info = account.account.data.parsed?.info;
+        const wallet = info?.owner;
+        const tokenAmount = info?.tokenAmount;
+        const balance = Number(tokenAmount?.uiAmountString || tokenAmount?.uiAmount || 0);
+        if (!wallet || balance <= 0) continue;
+        balances.set(wallet, (balances.get(wallet) || 0) + balance);
+      }
+
+      return Array.from(balances, ([wallet, balance]) => ({ wallet, balance }))
+        .sort((a, b) => a.wallet.localeCompare(b.wallet));
+    } catch (error) {
+      lastError = error;
+      console.warn(`pPEG holder scan RPC failed: ${rpcUrl}`, error);
+    }
+  }
+
+  throw lastError || new Error("All Solana RPC endpoints failed");
+}
+
+async function refreshRegistryFromOnchain() {
+  const holders = await fetchPpegHolders();
+  const registry = await loadRegistry();
+  const activeWallets = new Set();
+
+  for (const holder of holders) {
+    if (claimableCount(holder.balance) < 1) continue;
+    activeWallets.add(holder.wallet);
+    syncAssignment(holder.wallet, holder.balance, registry);
+  }
+
+  for (const wallet of Object.keys(registry.assignments)) {
+    if (!activeWallets.has(wallet)) {
+      syncAssignment(wallet, 0, registry);
+    }
+  }
+
+  registry.lastIndexedAt = new Date().toISOString();
+  registry.holderCount = holders.filter((holder) => claimableCount(holder.balance) > 0).length;
+  await saveRegistry(registry);
+  return registry;
+}
+
 async function readBody(request) {
   const chunks = [];
   for await (const chunk of request) chunks.push(chunk);
@@ -161,6 +219,12 @@ const server = createServer(async (request, response) => {
       const wallet = normalizeWallet(url.searchParams.get("wallet"));
       const registry = await loadRegistry();
       send(response, 200, wallet ? registry.assignments[wallet] || null : registry);
+      return;
+    }
+
+    if ((request.method === "GET" || request.method === "POST") && url.pathname === "/registry/refresh") {
+      const registry = await refreshRegistryFromOnchain();
+      send(response, 200, registry);
       return;
     }
 
