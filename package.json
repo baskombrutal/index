@@ -1,30 +1,15 @@
 {
-  "name": "pepe-peg",
+  "name": "pepe-peg-registry",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node registry-server.mjs",
-    "dev": "vite --host 0.0.0.0",
-    "build": "vite build",
-    "preview": "vite preview --host 0.0.0.0",
-    "compile": "vite build",
-    "registry": "node registry-server.mjs",
-    "pinata:upload": "node scripts/upload-pinata.mjs",
-    "rarity:build": "node scripts/build-rarity.mjs"
+    "start": "node registry-server.mjs"
+  },
+  "engines": {
+    "node": ">=20"
   },
   "dependencies": {
-    "@metaplex-foundation/mpl-token-metadata": "^3.4.0",
-    "@metaplex-foundation/umi": "^1.5.1",
-    "@metaplex-foundation/umi-bundle-defaults": "^1.5.1",
-    "@metaplex-foundation/umi-web3js-adapters": "^1.5.1",
-    "@reown/appkit": "^1.8.19",
-    "@reown/appkit-adapter-solana": "^1.8.19",
-    "@solana/web3.js": "^1.98.4",
-    "pinata": "^2.5.6",
-    "vite": "^7.0.0"
-  },
-  "devDependencies": {
-    "wrangler": "^4.87.0"
+    "@solana/web3.js": "^1.98.4"
   }
 }
