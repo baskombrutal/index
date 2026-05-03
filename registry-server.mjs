@@ -146,7 +146,10 @@ async function getCollectionVerifier() {
   if (!collectionMintAddress) throw new Error("COLLECTION_MINT is not configured");
   if (!collectionAuthorityKeypairPath) throw new Error("COLLECTION_AUTHORITY_KEYPAIR is not configured");
 
-  const secret = JSON.parse(await readFile(collectionAuthorityKeypairPath, "utf8"));
+  const secretText = collectionAuthorityKeypairPath.trim().startsWith("[")
+    ? collectionAuthorityKeypairPath
+    : await readFile(collectionAuthorityKeypairPath, "utf8");
+  const secret = JSON.parse(secretText);
   const umi = createUmi(solanaRpcUrl).use(mplTokenMetadata());
   const keypair = umi.eddsa.createKeypairFromSecretKey(new Uint8Array(secret));
   umi.use(keypairIdentity(keypair));
