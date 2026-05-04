@@ -28,6 +28,7 @@ const solanaRpcUrl = process.env.SOLANA_RPC_URL || process.env.VITE_SOLANA_RPC_U
 const collectionMintAddress = process.env.COLLECTION_MINT || process.env.VITE_COLLECTION_MINT || "";
 const collectionAuthorityKeypairPath = process.env.COLLECTION_AUTHORITY_KEYPAIR || process.env.DEV_KEYPAIR || "";
 const convertProgramAddress = process.env.CONVERT_PROGRAM_ID || process.env.VITE_CONVERT_PROGRAM_ID || "";
+const registryProgramAddress = process.env.REGISTRY_PROGRAM_ID || process.env.VITE_REGISTRY_PROGRAM_ID || "AF5wG7FArPd4GdUMNGj6hevhKT8GCHRBuHbMpbDnYz2K";
 const verifyAssetBaseUrl = String(process.env.VERIFY_ASSET_BASE_URL || process.env.VITE_ASSET_BASE_URL || "").replace(/\/$/, "");
 const solanaRpcUrls = [
   solanaRpcUrl,
@@ -43,6 +44,11 @@ const excludedRegistryWallets = new Set(
 let registryWriteQueue = Promise.resolve();
 let collectionVerifier = null;
 let reindexPromise = null;
+const registryProgram = new PublicKey(registryProgramAddress);
+const holderCountOffset = 10;
+const holderOwnerOffset = 16;
+const holderMintOffset = 48;
+const holderIdsOffset = 80;
 
 function hashAddress(address) {
   let hash = 2166136261;
@@ -74,6 +80,13 @@ function normalizePegIds(ids) {
   return [...new Set((Array.isArray(ids) ? ids : [])
     .map(Number)
     .filter((id) => Number.isInteger(id) && id >= 1 && id <= maxSupply))];
+}
+
+function removeIdFromAssignment(registry, wallet, id) {
+  const assignment = registry.assignments[wallet];
+  if (!assignment) return;
+  assignment.ids = normalizePegIds(assignment.ids).filter((item) => item !== id);
+  assignment.status = assignment.ids.length > 0 ? "active" : "inactive";
 }
 
 function sanitizeRegistry(registry) {
@@ -301,7 +314,7 @@ function nextAvailableId(wallet, registry, reservedIds = []) {
   return null;
 }
 
-function syncAssignment(wallet, balance, registry) {
+function syncAssignment(wallet, balance, registry, onchainIds = []) {
   if (isExcludedRegistryWallet(wallet)) {
     const existing = registry.assignments[wallet] || { ids: [] };
     for (const id of normalizePegIds(existing.ids)) delete registry.ids[String(id)];
@@ -312,8 +325,17 @@ function syncAssignment(wallet, balance, registry) {
   const targetCount = claimableCount(balance);
   const existing = registry.assignments[wallet] || { ids: [] };
   const ids = [];
+  const preferredIds = normalizePegIds(onchainIds).slice(0, targetCount);
+
+  for (const id of preferredIds) {
+    const previousWallet = registry.ids[String(id)];
+    if (previousWallet && previousWallet !== wallet) removeIdFromAssignment(registry, previousWallet, id);
+    registry.ids[String(id)] = wallet;
+    ids.push(id);
+  }
+
   for (const id of normalizePegIds(existing.ids)) {
-    if (registry.ids[String(id)] === wallet && !ids.includes(id)) {
+    if (registry.ids[String(id)] === wallet && !ids.includes(id) && ids.length < targetCount) {
       ids.push(id);
     }
   }
@@ -380,15 +402,71 @@ async function fetchPpegHolders() {
   throw lastError || new Error("All Solana RPC endpoints failed");
 }
 
+function registryHolderPda(wallet) {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("holder"), ppegMint.toBuffer(), new PublicKey(wallet).toBuffer()],
+    registryProgram,
+  )[0];
+}
+
+function parseHolderIds(data, wallet) {
+  if (!data || data.length < holderIdsOffset || data.subarray(0, 8).toString("utf8") !== "PPEGHLD1") return [];
+  const owner = new PublicKey(data.subarray(holderOwnerOffset, holderOwnerOffset + 32)).toBase58();
+  const mint = new PublicKey(data.subarray(holderMintOffset, holderMintOffset + 32)).toBase58();
+  if (owner !== wallet || mint !== ppegMintAddress) return [];
+
+  const count = data.readUInt16LE(holderCountOffset);
+  const ids = [];
+  for (let index = 0; index < count; index += 1) {
+    const offset = holderIdsOffset + index * 2;
+    if (offset + 2 > data.length) break;
+    const id = data.readUInt16LE(offset);
+    if (id >= 1 && id <= maxSupply) ids.push(id);
+  }
+  return normalizePegIds(ids);
+}
+
+async function fetchRegistryHolderIds(wallet) {
+  if (!wallet || isExcludedRegistryWallet(wallet)) return [];
+  const holder = registryHolderPda(wallet);
+  let lastError = null;
+
+  for (const rpcUrl of solanaRpcUrls) {
+    try {
+      const connection = new Connection(rpcUrl, "confirmed");
+      const account = await connection.getAccountInfo(holder, "confirmed");
+      return account ? parseHolderIds(account.data, wallet) : [];
+    } catch (error) {
+      lastError = error;
+      console.warn(`registry holder RPC failed: ${rpcUrl}`, error);
+    }
+  }
+
+  if (lastError) throw lastError;
+  return [];
+}
+
+async function syncWalletFromOnchain(wallet) {
+  const [balance, holderIds] = await Promise.all([
+    fetchPpegBalance(wallet),
+    fetchRegistryHolderIds(wallet),
+  ]);
+  return withRegistryWrite((registry) => syncAssignment(wallet, balance, registry, holderIds));
+}
+
 async function refreshRegistryFromOnchain() {
   const holders = await fetchPpegHolders();
+  const holderIdsByWallet = new Map(await Promise.all(
+    holders.map(async (holder) => [holder.wallet, await fetchRegistryHolderIds(holder.wallet).catch(() => [])]),
+  ));
+
   return withRegistryWrite((registry) => {
     const activeWallets = new Set();
 
     for (const holder of holders) {
       if (isExcludedRegistryWallet(holder.wallet) || claimableCount(holder.balance) < 1) continue;
       activeWallets.add(holder.wallet);
-      syncAssignment(holder.wallet, holder.balance, registry);
+      syncAssignment(holder.wallet, holder.balance, registry, holderIdsByWallet.get(holder.wallet) || []);
     }
 
     for (const wallet of Object.keys(registry.assignments)) {
@@ -442,8 +520,13 @@ async function handleRequest(request, response) {
 
     if (request.method === "GET" && url.pathname === "/registry") {
       const wallet = normalizeWallet(url.searchParams.get("wallet"));
+      if (wallet) {
+        const assignment = await syncWalletFromOnchain(wallet);
+        send(response, 200, assignment || null);
+        return;
+      }
       const registry = sanitizeRegistry(await loadRegistry());
-      send(response, 200, wallet ? registry.assignments[wallet] || null : registry);
+      send(response, 200, registry);
       return;
     }
 
@@ -461,8 +544,7 @@ async function handleRequest(request, response) {
         return;
       }
 
-      const balance = await fetchPpegBalance(wallet);
-      const assignment = await withRegistryWrite((registry) => syncAssignment(wallet, balance, registry));
+      const assignment = await syncWalletFromOnchain(wallet);
       send(response, 200, assignment);
       return;
     }
