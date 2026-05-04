@@ -23,7 +23,8 @@ const maxSupply = 2500;
 const healthcheckPort = Number(process.env.PORT || 8080);
 const publicPort = Number(process.env.REGISTRY_PORT || 8787);
 const listenPorts = [...new Set([healthcheckPort, publicPort].filter(Boolean))];
-const reindexIntervalMs = Number(process.env.REINDEX_INTERVAL_MS || 3000);
+const reindexIntervalMs = Number(process.env.REINDEX_INTERVAL_MS || 60000);
+const holderScanConcurrency = Math.max(1, Number(process.env.REGISTRY_HOLDER_SCAN_CONCURRENCY || 3));
 const solanaRpcUrl = process.env.SOLANA_RPC_URL || process.env.VITE_SOLANA_RPC_URL || clusterApiUrl("mainnet-beta");
 const collectionMintAddress = process.env.COLLECTION_MINT || process.env.VITE_COLLECTION_MINT || "";
 const collectionAuthorityKeypairPath = process.env.COLLECTION_AUTHORITY_KEYPAIR || process.env.DEV_KEYPAIR || "";
@@ -402,6 +403,23 @@ async function fetchPpegHolders() {
   throw lastError || new Error("All Solana RPC endpoints failed");
 }
 
+async function mapWithConcurrency(items, limit, mapper) {
+  const results = new Array(items.length);
+  let cursor = 0;
+
+  async function worker() {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await mapper(items[index], index);
+      await sleep(80);
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
 function registryHolderPda(wallet) {
   return PublicKey.findProgramAddressSync(
     [Buffer.from("holder"), ppegMint.toBuffer(), new PublicKey(wallet).toBuffer()],
@@ -456,15 +474,17 @@ async function syncWalletFromOnchain(wallet) {
 
 async function refreshRegistryFromOnchain() {
   const holders = await fetchPpegHolders();
-  const holderIdsByWallet = new Map(await Promise.all(
-    holders.map(async (holder) => [holder.wallet, await fetchRegistryHolderIds(holder.wallet).catch(() => [])]),
+  const activeHolders = holders.filter((holder) => !isExcludedRegistryWallet(holder.wallet) && claimableCount(holder.balance) >= 1);
+  const holderIdsByWallet = new Map(await mapWithConcurrency(
+    activeHolders,
+    holderScanConcurrency,
+    async (holder) => [holder.wallet, await fetchRegistryHolderIds(holder.wallet).catch(() => [])],
   ));
 
   return withRegistryWrite((registry) => {
     const activeWallets = new Set();
 
-    for (const holder of holders) {
-      if (isExcludedRegistryWallet(holder.wallet) || claimableCount(holder.balance) < 1) continue;
+    for (const holder of activeHolders) {
       activeWallets.add(holder.wallet);
       syncAssignment(holder.wallet, holder.balance, registry, holderIdsByWallet.get(holder.wallet) || []);
     }
@@ -497,6 +517,10 @@ function send(response, statusCode, body) {
     "Content-Type": "application/json",
   });
   response.end(JSON.stringify(body));
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function handleRequest(request, response) {
