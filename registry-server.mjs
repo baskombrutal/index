@@ -31,11 +31,7 @@ const collectionAuthorityKeypairPath = process.env.COLLECTION_AUTHORITY_KEYPAIR 
 const convertProgramAddress = process.env.CONVERT_PROGRAM_ID || process.env.VITE_CONVERT_PROGRAM_ID || "";
 const registryProgramAddress = process.env.REGISTRY_PROGRAM_ID || process.env.VITE_REGISTRY_PROGRAM_ID || "AF5wG7FArPd4GdUMNGj6hevhKT8GCHRBuHbMpbDnYz2K";
 const verifyAssetBaseUrl = String(process.env.VERIFY_ASSET_BASE_URL || process.env.VITE_ASSET_BASE_URL || "").replace(/\/$/, "");
-const solanaRpcUrls = [
-  solanaRpcUrl,
-  "https://api.mainnet-beta.solana.com",
-  "https://solana-rpc.publicnode.com",
-].filter((url, index, urls) => url && urls.indexOf(url) === index);
+const solanaRpcUrls = [solanaRpcUrl].filter(Boolean);
 const excludedRegistryWallets = new Set(
   String(process.env.EXCLUDED_REGISTRY_WALLETS || process.env.PPEG_POOL_WALLETS || "")
     .split(/[\s,]+/)
