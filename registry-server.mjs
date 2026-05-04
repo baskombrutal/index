@@ -23,6 +23,7 @@ const maxSupply = 2500;
 const healthcheckPort = Number(process.env.PORT || 8080);
 const publicPort = Number(process.env.REGISTRY_PORT || 8787);
 const listenPorts = [...new Set([healthcheckPort, publicPort].filter(Boolean))];
+const backgroundReindexEnabled = String(process.env.ENABLE_BACKGROUND_REINDEX || "").toLowerCase() === "true";
 const reindexIntervalMs = Number(process.env.REINDEX_INTERVAL_MS || 60000);
 const holderScanConcurrency = Math.max(1, Number(process.env.REGISTRY_HOLDER_SCAN_CONCURRENCY || 3));
 const solanaRpcUrl = process.env.SOLANA_RPC_URL || process.env.VITE_SOLANA_RPC_URL || clusterApiUrl("mainnet-beta");
@@ -588,5 +589,9 @@ for (const port of listenPorts) {
   });
 }
 
-setTimeout(refreshRegistryOnce, 3000);
-setInterval(refreshRegistryOnce, reindexIntervalMs);
+if (backgroundReindexEnabled) {
+  setTimeout(refreshRegistryOnce, 3000);
+  setInterval(refreshRegistryOnce, reindexIntervalMs);
+} else {
+  console.log("PEPE PEG background registry refresh disabled");
+}
