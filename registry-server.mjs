@@ -25,6 +25,7 @@ const publicPort = Number(process.env.REGISTRY_PORT || 8787);
 const listenPorts = [...new Set([healthcheckPort, publicPort].filter(Boolean))];
 const backgroundReindexEnabled = String(process.env.ENABLE_BACKGROUND_REINDEX || "").toLowerCase() === "true";
 const reindexIntervalMs = Number(process.env.REINDEX_INTERVAL_MS || 60000);
+const walletSyncCacheMs = Number(process.env.WALLET_SYNC_CACHE_MS || 30000);
 const holderScanConcurrency = Math.max(1, Number(process.env.REGISTRY_HOLDER_SCAN_CONCURRENCY || 3));
 const solanaRpcUrl = process.env.SOLANA_RPC_URL || process.env.VITE_SOLANA_RPC_URL || clusterApiUrl("mainnet-beta");
 const collectionMintAddress = process.env.COLLECTION_MINT || process.env.VITE_COLLECTION_MINT || "";
@@ -42,6 +43,8 @@ const excludedRegistryWallets = new Set(
 let registryWriteQueue = Promise.resolve();
 let collectionVerifier = null;
 let reindexPromise = null;
+const walletSyncCache = new Map();
+const walletSyncPromises = new Map();
 const registryProgram = new PublicKey(registryProgramAddress);
 const holderCountOffset = 10;
 const holderOwnerOffset = 16;
@@ -462,11 +465,30 @@ async function fetchRegistryHolderIds(wallet) {
 }
 
 async function syncWalletFromOnchain(wallet) {
-  const [balance, holderIds] = await Promise.all([
-    fetchPpegBalance(wallet),
-    fetchRegistryHolderIds(wallet),
-  ]);
-  return withRegistryWrite((registry) => syncAssignment(wallet, balance, registry, holderIds));
+  const cached = walletSyncCache.get(wallet);
+  if (cached && Date.now() - cached.syncedAt < walletSyncCacheMs) return cached.assignment;
+
+  const inFlight = walletSyncPromises.get(wallet);
+  if (inFlight) return inFlight;
+
+  const promise = (async () => {
+    try {
+      const holderIds = await fetchRegistryHolderIds(wallet);
+      const balance = holderIds.length > 0 ? holderIds.length : await fetchPpegBalance(wallet);
+      const assignment = await withRegistryWrite((registry) => syncAssignment(wallet, balance, registry, holderIds));
+      walletSyncCache.set(wallet, { assignment, syncedAt: Date.now() });
+      return assignment;
+    } catch (error) {
+      const fallback = await loadRegistry().then((registry) => sanitizeRegistry(registry).assignments[wallet]).catch(() => null);
+      if (fallback) return fallback;
+      throw error;
+    } finally {
+      walletSyncPromises.delete(wallet);
+    }
+  })();
+
+  walletSyncPromises.set(wallet, promise);
+  return promise;
 }
 
 async function refreshRegistryFromOnchain() {
